@@ -1,0 +1,39 @@
+# KEC-RL configuration for FaceForensics++ (reproduces the paper's protocol).
+# Fixed parameters vs tunable parameters are separated per Reviewer 5's request.
+
+fixed:
+  backbone: xception
+  resolution: 224
+  kan_grid_size: 8           # G
+  kan_spline_order: 3        # k (cubic)
+  kan_widths: [1024, 512, 256]
+  ppo_clip: 0.2
+  ppo_gamma: 0.99
+  ppo_gae_lambda: 0.95
+  state_dim: 272
+  action_dim: 3
+  optimizer: adam
+  lr: 1.0e-4
+  batch_size: 32
+  episodes: 500
+  steps_per_episode: 512
+  ec_curve: secp256r1        # NIST P-256
+
+tunable:
+  lambda_curv: 1.0e-2        # curvature weight (operating point; see Fig. lambda)
+  reward_weights:            # (alpha1..alpha4) in Eq. (11)
+    a1: 1.0                  # accuracy
+    a2: 1.0                  # robustness
+    a3: 0.2                  # integrity
+    a4: 0.05                 # latency/compute cost
+  pgd_eps: 0.03              # l_inf training budget
+  randomisation_max: 0.05    # nu upper bound
+
+evaluation:
+  eps_sweep: [0.01, 0.03, 0.06]
+  adaptive:
+    pgd:   {eps: 0.03, steps: 100, restarts: 10, eot_samples: 30}
+    cw:    {kappa: 5.0, lr: 5.0e-3, steps: 1000, search_steps: 9, eot_samples: 30}
+    boundary: {queries: 10000}
+
+seeds: [0, 1, 2, 3, 4]

@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kecrl"
+version = "0.1.0"
+description = "Kolmogorov-Arnold + RL robust deepfake detection with EC provenance"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+  "torch>=2.2.0", "torchvision>=0.17.0", "timm>=0.9.16",
+  "numpy>=1.24", "Pillow>=10.0", "cryptography>=42.0",
+  "tinyec>=0.4.0", "matplotlib>=3.7",
+]
+
+[project.optional-dependencies]
+attacks = ["torchattacks>=3.5.1"]
+face = ["facenet-pytorch>=2.5.3"]
+dev = ["pytest>=7.4"]
+
+[tool.setuptools.packages.find]
+include = ["kecrl*"]
