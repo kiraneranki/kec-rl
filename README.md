@@ -126,7 +126,7 @@ Code: MIT. Trained weights (when released): CC-BY-4.0. See `LICENSE`.
   title   = {Mitigating Adversarial Attacks Using Kolmogorov Elliptic-Curve
              Based Reinforcement Learning for Counter-Terror Detection of
              Deepfake Content},
-  author  = {Author, First and Author, Second and Author, Third},
+  author  = {Kiran L.N. Eranki, Senior Member IEEE, Faculty of Science and Technology, ICFAI Foundation for Higher Education, Hyderabad-501203, Telangana, India, erankikiran@ifheindia.org},
   journal = {(under review)},
   year    = {2026}
 }
