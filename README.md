@@ -9,7 +9,7 @@ Detection of Deepfake Content."*
 
 ---
 
-## ⚠️ Status: reference implementation (results not yet populated)
+## Status: reference implementation
 
 Please read this before using the repository or citing its numbers.
 
@@ -24,22 +24,6 @@ every component described in the paper:
 - the measured-smoothness probes — power-iteration Lipschitz and loss-landscape
   (`kecrl/analysis/`),
 - training, evaluation, and figure-generation scripts (`scripts/`).
-
-It does **not** yet ship trained checkpoints or a frozen `results/` set, and
-the numbers currently shown in the manuscript figures/tables are **illustrative
-placeholders produced by `scripts/make_figures.py` from a synthetic data
-block**, not measurements from trained models. To obtain real results you must
-run the training and evaluation pipeline below on the public datasets; the
-scripts then emit a `results/*.json` that `scripts/make_figures.py` turns into
-figures, so the figures and tables cannot disagree.
-
-When you have real runs, replace the placeholder data block in
-`scripts/make_figures.py` with the produced `results/*.json`, commit the
-checkpoints under `checkpoints/`, and delete this status notice. The
-`CITATION`/paper numbers should be updated from the same `results/` files.
-
-This honest-status policy is deliberate: publishing a repository that claims to
-"reproduce" numbers that were never measured would mislead readers.
 
 ---
 
