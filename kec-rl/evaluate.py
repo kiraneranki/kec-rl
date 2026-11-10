@@ -1,86 +1,71 @@
-#!/usr/bin/env python3
-"""Evaluate a trained KEC-RL checkpoint and write a results JSON.
+"""Evaluation: clean/robust accuracy, AUC, and adaptive ASR.
 
-The results JSON is the single source of truth consumed by
-scripts/make_figures.py, so figures can never disagree with the tables.
-
-Example:
-    python scripts/evaluate.py --checkpoint runs/ff_kecrl/checkpoint.pt \
-        --dataset faceforensics --data-root /data/ff --out results/ff.json
+These functions produce the raw numbers that populate Tables 3-5 and the
+figures. They do NOT hard-code any result; every value comes from the model
+you pass in, evaluated on the data you pass in.
 """
-import argparse
-import json
-from pathlib import Path
+from __future__ import annotations
 
 import torch
-from torch.utils.data import DataLoader
+import torch.nn.functional as F
 
-import sys
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from kecrl.models.detector import DeepfakeDetector
-from kecrl.evaluate import (clean_accuracy, robust_accuracy, auc_score,
-                            epsilon_sweep, adaptive_asr_table)
-from kecrl.analysis.lipschitz import global_lipschitz, loss_landscape_1d
+from .attacks.harness import pgd_attack, ensemble_asr
 
 
-def make_test_loader(args):
-    if args.synthetic:
-        from torch.utils.data import TensorDataset
-        x = torch.rand(128, 3, 224, 224); y = torch.randint(0, 2, (128,))
-        return DataLoader(TensorDataset(x, y), batch_size=args.batch_size)
-    from kecrl.data.datasets import load_manifest, identity_disjoint_split, FrameDataset
-    manifest = load_manifest(args.data_root, args.dataset)
-    _, _, te = identity_disjoint_split(manifest, seed=args.seed)
-    ds = FrameDataset(te, root=Path(args.data_root) / args.dataset)
-    return DataLoader(ds, batch_size=args.batch_size)
+@torch.no_grad()
+def clean_accuracy(model, loader, device) -> float:
+    correct = total = 0
+    for x, y in loader:
+        x, y = x.to(device), y.to(device)
+        correct += (model(x).argmax(1) == y).sum().item()
+        total += y.numel()
+    return correct / max(1, total)
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--checkpoint", required=True)
-    ap.add_argument("--dataset", default="faceforensics")
-    ap.add_argument("--data-root", default="")
-    ap.add_argument("--backbone", default="xception")
-    ap.add_argument("--batch-size", type=int, default=32)
-    ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--synthetic", action="store_true")
-    ap.add_argument("--out", default="results/eval.json")
-    args = ap.parse_args()
+def robust_accuracy(model, loader, device, eps=0.03, steps=20,
+                    restarts=1, eot_samples=10) -> float:
+    """Robust accuracy under l_inf PGD at budget eps."""
+    correct = total = 0
+    for x, y in loader:
+        x, y = x.to(device), y.to(device)
+        x_adv = pgd_attack(model, x, y, eps=eps, steps=steps,
+                           restarts=restarts, eot_samples=eot_samples)
+        with torch.no_grad():
+            correct += (model(x_adv).argmax(1) == y).sum().item()
+        total += y.numel()
+    return correct / max(1, total)
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = DeepfakeDetector(backbone=args.backbone, pretrained=False).to(device)
-    ckpt = torch.load(args.checkpoint, map_location=device)
-    model.load_state_dict(ckpt["model"]); model.eval()
 
-    loader = make_test_loader(args)
+@torch.no_grad()
+def auc_score(model, loader, device) -> float:
+    """ROC-AUC over the test set (fake = positive)."""
+    scores, labels = [], []
+    for x, y in loader:
+        x = x.to(device)
+        p = model(x).softmax(1)[:, 1]
+        scores.append(p.cpu()); labels.append(y)
+    scores = torch.cat(scores); labels = torch.cat(labels)
+    # rank-based AUC (Mann-Whitney U)
+    pos = scores[labels == 1]; neg = scores[labels == 0]
+    if pos.numel() == 0 or neg.numel() == 0:
+        return float("nan")
+    order = torch.argsort(scores)
+    ranks = torch.empty_like(order, dtype=torch.float)
+    ranks[order] = torch.arange(1, scores.numel() + 1, dtype=torch.float)
+    auc = (ranks[labels == 1].sum() - pos.numel() * (pos.numel() + 1) / 2) \
+        / (pos.numel() * neg.numel())
+    return float(auc)
 
-    results = {
-        "dataset": args.dataset,
-        "clean_accuracy": clean_accuracy(model, loader, device),
-        "robust_accuracy_eps_sweep": epsilon_sweep(model, loader, device),
-        "auc": auc_score(model, loader, device),
+
+def epsilon_sweep(model, loader, device, budgets=(0.01, 0.03, 0.06)) -> dict:
+    return {eps: robust_accuracy(model, loader, device, eps=eps) for eps in budgets}
+
+
+def adaptive_asr_table(model, x_fake, y_fake) -> dict:
+    """Per-attack-type and ensemble ASR with the paper's attack configs."""
+    configs = {
+        "pgd": dict(eps=0.03, steps=100, restarts=10, eot_samples=30),
+        "cw": dict(kappa=5.0, lr=5e-3, steps=1000, search_steps=9, eot_samples=30),
+        "boundary": dict(queries=10000),
     }
-
-    # measured smoothness probes (one batch)
-    x, y = next(iter(loader)); x, y = x.to(device), y.to(device)
-    results["lipschitz_global_kan"] = global_lipschitz(model.encoder,
-                                                       model.features(x))
-    alphas, curve = loss_landscape_1d(model, x, y)
-    results["loss_landscape"] = {"alphas": alphas, "loss": curve}
-
-    # adaptive ASR on the fake subset
-    fake_mask = y == 1
-    if fake_mask.sum() > 0:
-        results["adaptive_asr"] = adaptive_asr_table(model, x[fake_mask],
-                                                      y[fake_mask])
-
-    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    with open(args.out, "w") as f:
-        json.dump(results, f, indent=2)
-    print(f"[done] wrote {args.out}")
-    print(json.dumps(results, indent=2)[:800])
-
-
-if __name__ == "__main__":
-    main()
+    return ensemble_asr(model, x_fake, y_fake, configs)

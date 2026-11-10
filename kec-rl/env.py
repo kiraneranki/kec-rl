@@ -40,7 +40,7 @@ def build_state(embedding, attack_stats, nu, lam, t, device):
     """
     pieces = [
         embedding.detach().flatten()[:256],
-        attack_stats.detach().flatten()[:12],
+        attack_stats.detach().flatten()[:13],  # 13-d: see manuscript Sec. 6.3
         torch.tensor([nu, lam, math.log1p(t)], device=device),
     ]
     s = torch.cat(pieces)

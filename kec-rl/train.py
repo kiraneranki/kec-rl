@@ -1,97 +1,119 @@
-#!/usr/bin/env python3
-"""Train KEC-RL on a dataset.
+"""KEC-RL training loop (Algorithm 1 in the manuscript).
 
-Example:
-    python scripts/train.py --dataset faceforensics --data-root /data/ff \
-        --backbone xception --episodes 500 --out runs/ff_kecrl
+Alternates:
+  * detector/encoder update minimising the robust objective + curvature penalty,
+  * PPO controller update maximising the Markov-game return,
+  * EC commitment of each verdict (auxiliary; does not affect accuracy).
 
-This trains the full KEC-RL system (KAN encoder + robust detector + PPO
-controller + EC provenance). The resulting checkpoint + returns history are
-written to --out. Replace the synthetic fallback with real data by pointing
---data-root at frames prepared via scripts/build_manifest.py.
+Run via scripts/train.py, which parses configs and datasets. This module holds
+the reusable training step so it can be unit-tested on synthetic data.
 """
-import argparse
-import json
-import os
-from pathlib import Path
+from __future__ import annotations
+
+import hashlib
+from dataclasses import dataclass
 
 import torch
-from torch.utils.data import DataLoader
+import torch.nn.functional as F
 
-import sys
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from kecrl.models.detector import DeepfakeDetector
-from kecrl.train import TrainConfig, train_kecrl
-from kecrl.env import RewardWeights
+from .env import RewardWeights, build_state, map_action, step_reward
+from .models.ppo_controller import PPO, PPOConfig
+from .crypto.ec_commit import ProvenanceChain, SigningKey
 
 
-def infinite(loader):
-    while True:
-        for batch in loader:
-            yield batch
+@dataclass
+class TrainConfig:
+    episodes: int = 500
+    steps_per_episode: int = 512
+    eps: float = 0.03
+    lambda_curv: float = 1e-2
+    lr: float = 1e-4
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    seed: int = 0
 
 
-def make_loader(args):
-    """Build a real DataLoader, or a synthetic one if --synthetic is set."""
-    if args.synthetic:
-        from torch.utils.data import TensorDataset
-        n = 256
-        x = torch.rand(n, 3, 224, 224)
-        y = torch.randint(0, 2, (n,))
-        return DataLoader(TensorDataset(x, y), batch_size=args.batch_size,
-                          shuffle=True, drop_last=True)
-    from kecrl.data.datasets import (
-        load_manifest, identity_disjoint_split, save_split_indices, FrameDataset)
-    manifest = load_manifest(args.data_root, args.dataset)
-    tr, va, te = identity_disjoint_split(manifest, seed=args.seed)
-    save_split_indices(args.dataset, args.seed, (tr, va, te))
-    ds = FrameDataset(tr, root=Path(args.data_root) / args.dataset)
-    return DataLoader(ds, batch_size=args.batch_size, shuffle=True,
-                      num_workers=args.workers, drop_last=True)
+def _digest(z: torch.Tensor) -> bytes:
+    return hashlib.sha256(z.detach().cpu().numpy().tobytes()).digest()
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset", default="faceforensics")
-    ap.add_argument("--data-root", default="")
-    ap.add_argument("--backbone", default="xception")
-    ap.add_argument("--episodes", type=int, default=500)
-    ap.add_argument("--steps", type=int, default=512)
-    ap.add_argument("--batch-size", type=int, default=32)
-    ap.add_argument("--eps", type=float, default=0.03)
-    ap.add_argument("--lambda-curv", type=float, default=1e-2)
-    ap.add_argument("--lr", type=float, default=1e-4)
-    ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--workers", type=int, default=4)
-    ap.add_argument("--synthetic", action="store_true",
-                    help="use random data (smoke test; no real training)")
-    ap.add_argument("--no-pretrained", action="store_true")
-    ap.add_argument("--out", default="runs/exp")
-    args = ap.parse_args()
+def train_kecrl(model, data_iter, cfg: TrainConfig,
+                weights: RewardWeights | None = None, log=print):
+    """Train KEC-RL. `data_iter` yields (x, y) batches on the right device.
 
-    os.makedirs(args.out, exist_ok=True)
-    loader = make_loader(args)
-    data_iter = infinite(loader)
+    Returns the trained model, the PPO controller, and the provenance chain.
+    """
+    torch.manual_seed(cfg.seed)
+    weights = weights or RewardWeights()
+    device = cfg.device
+    model.to(device)
 
-    model = DeepfakeDetector(backbone=args.backbone,
-                             pretrained=not args.no_pretrained)
-    cfg = TrainConfig(episodes=args.episodes, steps_per_episode=args.steps,
-                      eps=args.eps, lambda_curv=args.lambda_curv, lr=args.lr,
-                      seed=args.seed)
-    weights = RewardWeights(a1=1.0, a2=1.0, a3=0.2, a4=0.05)
+    opt = torch.optim.Adam(model.parameters(), lr=cfg.lr)
+    ppo = PPO(PPOConfig(), state_dim=272, action_dim=3, device=device)
+    chain = ProvenanceChain(SigningKey.generate())
 
-    model, ppo, chain, returns = train_kecrl(model, data_iter, cfg, weights)
+    attack_stats = torch.zeros(13, device=device)  # 13-d; see manuscript Sec. 6.3
+    returns_hist = []
 
-    torch.save({"model": model.state_dict(),
-                "ppo": ppo.net.state_dict(),
-                "config": vars(args)},
-               Path(args.out) / "checkpoint.pt")
-    with open(Path(args.out) / "returns.json", "w") as f:
-        json.dump(returns, f)
-    print(f"[done] chain verified = {chain.verify()}; "
-          f"saved to {args.out}/checkpoint.pt")
+    for ep in range(cfg.episodes):
+        states, actions, logps, rewards, values, dones = [], [], [], [], [], []
+        ep_return = 0.0
 
+        for t in range(cfg.steps_per_episode):
+            x, y = next(data_iter)
+            x, y = x.to(device), y.to(device)
 
-if __name__ == "__main__":
-    main()
+            with torch.no_grad():
+                emb = model.embedding(x).mean(0)
+            s = build_state(emb, attack_stats, model.nu, cfg.lambda_curv,
+                            ep, device)
+            a, logp, value = ppo.net.act(s.unsqueeze(0))
+            a = a.squeeze(0)
+
+            r, info, x_adv, mix = step_reward(model, x, y, a, weights, cfg.eps)
+
+            # ---- detector/encoder update: robust objective + curvature penalty
+            model.train()
+            logits_clean = model(x)
+            logits_adv = model(x_adv.detach())
+            loss = (mix * F.cross_entropy(logits_adv, y)
+                    + (1 - mix) * F.cross_entropy(logits_clean, y)
+                    + cfg.lambda_curv * model.encoder.curvature_penalty())
+            opt.zero_grad(); loss.backward(); opt.step()
+            model.eval()
+
+            # ---- EC commitment of the verdict (auxiliary)
+            with torch.no_grad():
+                z = model.embedding(x).mean(0)
+                verdict = int(model(x).argmax(1).float().mean().round())
+                score = float(model(x).softmax(1)[:, 1].mean())
+            entry = chain.commit_verdict(_digest(z), verdict, score)
+            chain_ok = chain.verify()
+
+            # update running attack statistics (12-d)
+            attack_stats = 0.95 * attack_stats
+            attack_stats[0] = info["robust_loss"]
+            attack_stats[1] = 1.0 - info["clean_acc"]
+
+            states.append(s); actions.append(a.detach())
+            logps.append(logp.detach()); rewards.append(r)
+            values.append(float(value)); dones.append(0.0)
+            ep_return += r
+
+        # ---- PPO update at episode end
+        with torch.no_grad():
+            last_value = float(ppo.net(states[-1].unsqueeze(0))[2])
+        adv, rets = ppo.compute_gae(rewards, values, dones, last_value)
+        batch = {
+            "states": torch.stack(states),
+            "actions": torch.stack(actions),
+            "logps": torch.stack(logps),
+            "advantages": torch.tensor(adv, device=device),
+            "returns": torch.tensor(rets, device=device),
+        }
+        ppo.update(batch)
+        returns_hist.append(ep_return / cfg.steps_per_episode)
+        if ep % 10 == 0:
+            log(f"[ep {ep:4d}] return={returns_hist[-1]:+.3f} "
+                f"nu={model.nu:.3f} chain_ok={chain_ok}")
+
+    return model, ppo, chain, returns_hist
