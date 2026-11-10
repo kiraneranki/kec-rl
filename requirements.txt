@@ -1,0 +1,23 @@
+# Core
+torch>=2.2.0
+torchvision>=0.17.0
+timm>=0.9.16
+numpy>=1.24
+Pillow>=10.0
+
+# Attacks / analysis
+# (PGD, C&W, boundary are implemented in-repo; torchattacks optional for cross-check)
+torchattacks>=3.5.1
+
+# Cryptography (EC provenance)
+cryptography>=42.0
+tinyec>=0.4.0
+
+# Face alignment
+facenet-pytorch>=2.5.3
+
+# Figures / plotting
+matplotlib>=3.7
+
+# Dev
+pytest>=7.4

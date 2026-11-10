@@ -9,7 +9,7 @@ Detection of Deepfake Content."*
 
 ---
 
-## Status: reference implementation
+## ⚠️ Status: reference implementation (results not yet populated)
 
 Please read this before using the repository or citing its numbers.
 
@@ -25,12 +25,28 @@ every component described in the paper:
   (`kecrl/analysis/`),
 - training, evaluation, and figure-generation scripts (`scripts/`).
 
+It does **not** yet ship trained checkpoints or a frozen `results/` set, and
+the numbers currently shown in the manuscript figures/tables are **illustrative
+placeholders produced by `scripts/make_figures.py` from a synthetic data
+block**, not measurements from trained models. To obtain real results you must
+run the training and evaluation pipeline below on the public datasets; the
+scripts then emit a `results/*.json` that `scripts/make_figures.py` turns into
+figures, so the figures and tables cannot disagree.
+
+When you have real runs, replace the placeholder data block in
+`scripts/make_figures.py` with the produced `results/*.json`, commit the
+checkpoints under `checkpoints/`, and delete this status notice. The
+`CITATION`/paper numbers should be updated from the same `results/` files.
+
+This honest-status policy is deliberate: publishing a repository that claims to
+"reproduce" numbers that were never measured would mislead readers.
+
 ---
 
 ## Install
 
 ```bash
-git clone https://github.com/kec-rl/kec-rl
+git clone https://github.com/kiraneranki/kec-rl
 cd kec-rl
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
@@ -110,9 +126,8 @@ Code: MIT. Trained weights (when released): CC-BY-4.0. See `LICENSE`.
   title   = {Mitigating Adversarial Attacks Using Kolmogorov Elliptic-Curve
              Based Reinforcement Learning for Counter-Terror Detection of
              Deepfake Content},
-  author  = {Kiran L.N. Eranki, Senior Member IEEE, Faculty of Science and Technology, ICFAI Foundation for Higher Education, Hyderabad-501203, Telangana, India, erankikiran@ifheindia.org},
+  author  = {Author, First and Author, Second and Author, Third},
   journal = {(under review)},
   year    = {2026}
 }
-```# kec-rl-kec-rl
-Mitigating Adversarial Attacks Using Kolmogorov Elliptic-Curve Based Reinforcement Learning
+```
