@@ -39,7 +39,7 @@ def test_ppo_update_runs():
 
 def test_state_dim():
     from kecrl.env import build_state
-    emb = torch.randn(256); stats = torch.randn(12)
+    emb = torch.randn(256); stats = torch.randn(13)
     s = build_state(emb, stats, nu=0.01, lam=1e-2, t=5, device="cpu")
     assert s.numel() == 272
 
